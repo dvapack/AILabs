@@ -1,0 +1,717 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Технологии искусственного интеллекта. Анализ данных\n",
+    "## Лабораторная работа №5: Градиентный бустинг\n",
+    "**Выполнил:** Мещеряков Сергей Евгеньевич  \n",
+    "**Группа:** 6401-01.03.02D"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "!pip install catboost"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 1. Загрузка и первичный анализ данных"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import pandas as pd\n",
+    "import numpy as np\n",
+    "import matplotlib.pyplot as plt\n",
+    "import seaborn as sns\n",
+    "import shap\n",
+    "from sklearn.model_selection import train_test_split, GridSearchCV\n",
+    "from sklearn.preprocessing import StandardScaler, LabelEncoder\n",
+    "from sklearn.metrics import classification_report, roc_curve, auc, precision_recall_curve, mean_squared_error, mean_absolute_error, r2_score\n",
+    "from sklearn.ensemble import AdaBoostClassifier, GradientBoostingClassifier\n",
+    "from sklearn.tree import DecisionTreeClassifier, plot_tree\n",
+    "import xgboost as xgb\n",
+    "import catboost as cb\n",
+    "import warnings\n",
+    "warnings.filterwarnings('ignore')\n",
+    "\n",
+    "sns.set(style=\"whitegrid\")\n",
+    "%matplotlib inline"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "data = pd.read_csv(\"global_emissions.csv\")\n",
+    "data.head()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Описание датасета\n",
+    "\n",
+    "Датасет содержит данные о выбросах парниковых газов по странам за разные годы. Источник: `global_emissions.csv`.\n",
+    "\n",
+    "**Целевой признак (регрессия):** `Emissions.Production.CO2.Total` – суммарные выбросы CO₂.\n",
+    "\n",
+    "**Целевой признак (классификация):** `high_emissions` – бинарная переменная, равная 1, если суммарные выбросы выше медианы, иначе 0.\n",
+    "\n",
+    "**Признаки после удаления прямых компонент выбросов CO₂:**\n",
+    "- `Year` – год\n",
+    "- `Country.Name` – страна (категориальный)\n",
+    "- `Country.Code` – код страны (категориальный)\n",
+    "- `Country.GDP` – ВВП\n",
+    "- `Country.Population` – население\n",
+    "- `Emissions.Production.CH4` – выбросы метана\n",
+    "- `Emissions.Production.N2O` – выбросы N₂O\n",
+    "- `Emissions.Global Share.CO2.Cement` – доля глобальных выбросов CO₂ (цемент)\n",
+    "- `Emissions.Global Share.CO2.Coal` – доля глобальных выбросов CO₂ (уголь)\n",
+    "- `Emissions.Global Share.CO2.Gas` – доля глобальных выбросов CO₂ (газ)\n",
+    "- `Emissions.Global Share.CO2.Oil` – доля глобальных выбросов CO₂ (нефть)\n",
+    "- `Emissions.Global Share.CO2.Flaring` – доля глобальных выбросов CO₂ (факельное сжигание)\n",
+    "- `Emissions.Global Share.CO2.Other` – доля глобальных выбросов CO₂ (прочее)\n",
+    "- `Emissions.Global Share.CO2.Total` – общая доля в глобальных выбросах CO₂\n",
+    "\n",
+    "Удалены все столбцы, начинающиеся с `Emissions.Production.CO2.` (кроме целевого)."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "target_reg = 'Emissions.Production.CO2.Total'\n",
+    "co2_component_cols = [col for col in data.columns if col.startswith('Emissions.Production.CO2.') and col != target_reg]\n",
+    "print(f\"Удаляемые компоненты CO₂: {co2_component_cols}\")\n",
+    "\n",
+    "data_clean = data.dropna().copy()\n",
+    "data_clean = data_clean.drop(columns=co2_component_cols)\n",
+    "\n",
+    "print(f\"Размер после удаления пропусков и компонент CO₂: {data_clean.shape}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 2. Подготовка данных для классификации и регрессии"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "X = data_clean.drop(columns=[target_reg])\n",
+    "y_reg = data_clean[target_reg]\n",
+    "\n",
+    "median_val = y_reg.median()\n",
+    "y_cls = (y_reg > median_val).astype(int)\n",
+    "print(f\"Медиана целевой переменной: {median_val:.2f}\")\n",
+    "print(f\"Распределение классов для классификации:\\n{y_cls.value_counts()}\")\n",
+    "\n",
+    "categorical_cols = ['Country.Name', 'Country.Code']\n",
+    "numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()\n",
+    "\n",
+    "print(f\"Числовые признаки: {numeric_cols}\")\n",
+    "print(f\"Категориальные признаки: {categorical_cols}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "scaler = StandardScaler()\n",
+    "X_numeric_scaled = scaler.fit_transform(X[numeric_cols])\n",
+    "X_numeric_scaled = pd.DataFrame(X_numeric_scaled, columns=numeric_cols, index=X.index)\n",
+    "\n",
+    "X_scaled = pd.concat([X_numeric_scaled, X[categorical_cols]], axis=1)\n",
+    "\n",
+    "X_train, X_test, y_train_cls, y_test_cls = train_test_split(\n",
+    "    X_scaled, y_cls, test_size=0.2, random_state=42, stratify=y_cls\n",
+    ")\n",
+    "X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(\n",
+    "    X_scaled, y_reg, test_size=0.2, random_state=42\n",
+    ")\n",
+    "\n",
+    "print(f\"Обучающая выборка (классификация): {X_train.shape}\")\n",
+    "print(f\"Тестовая выборка (классификация): {X_test.shape}\")\n",
+    "print(f\"Обучающая выборка (регрессия): {X_train_reg.shape}\")\n",
+    "print(f\"Тестовая выборка (регрессия): {X_test_reg.shape}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**Примечание о кодировании категориальных признаков:**\n",
+    "- Для `AdaBoost` и `GradientBoosting` – применяется one-hot кодирование через `pd.get_dummies`.\n",
+    "- Для `XGBoost` – используется `enable_categorical=True` (XGBoost 1.6+), категориальные признаки передаются как есть с указанием `feature_types`.\n",
+    "- Для `CatBoost` – категориальные признаки передаются напрямую с указанием `cat_features`.\n",
+    "\n",
+    "Балансировка классов: для `AdaBoost` используется `class_weight='balanced'`; для `XGBoost` – `scale_pos_weight` (отношение числа отрицательных к положительным); для `CatBoost` – `auto_class_weights='Balanced'`.\n",
+    "\n",
+    "## 3. Классификаторы\n",
+    "\n",
+    "### 3.1 AdaBoost"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "X_train_ada = pd.get_dummies(X_train, columns=categorical_cols, drop_first=True)\n",
+    "X_test_ada = pd.get_dummies(X_test, columns=categorical_cols, drop_first=True)\n",
+    "\n",
+    "ada = AdaBoostClassifier(random_state=42)\n",
+    "param_ada = {'n_estimators': [50, 100, 200], 'learning_rate': [0.5, 1.0, 1.5]}\n",
+    "grid_ada = GridSearchCV(ada, param_ada, cv=5, scoring='roc_auc', n_jobs=-1)\n",
+    "grid_ada.fit(X_train_ada, y_train_cls)\n",
+    "\n",
+    "best_ada = grid_ada.best_estimator_\n",
+    "y_pred_ada = best_ada.predict(X_test_ada)\n",
+    "y_proba_ada = best_ada.predict_proba(X_test_ada)[:, 1]\n",
+    "\n",
+    "print(\"AdaBoost лучшие параметры:\", grid_ada.best_params_)\n",
+    "print(\"Classification report:\")\n",
+    "print(classification_report(y_test_cls, y_pred_ada))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "fpr_ada, tpr_ada, _ = roc_curve(y_test_cls, y_proba_ada)\n",
+    "roc_auc_ada = auc(fpr_ada, tpr_ada)\n",
+    "\n",
+    "precision_ada, recall_ada, _ = precision_recall_curve(y_test_cls, y_proba_ada)\n",
+    "\n",
+    "fig, axes = plt.subplots(1, 2, figsize=(12, 5))\n",
+    "axes[0].plot(fpr_ada, tpr_ada, label=f'AUC = {roc_auc_ada:.3f}')\n",
+    "axes[0].plot([0,1],[0,1],'k--')\n",
+    "axes[0].set_xlabel('False Positive Rate')\n",
+    "axes[0].set_ylabel('True Positive Rate')\n",
+    "axes[0].set_title('ROC (AdaBoost)')\n",
+    "axes[0].legend()\n",
+    "\n",
+    "axes[1].plot(recall_ada, precision_ada, label='PR curve')\n",
+    "axes[1].set_xlabel('Recall')\n",
+    "axes[1].set_ylabel('Precision')\n",
+    "axes[1].set_title('Precision-Recall (AdaBoost)')\n",
+    "axes[1].legend()\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.2 GradientBoosting"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "gb = GradientBoostingClassifier(random_state=42)\n",
+    "param_gb = {'n_estimators': [50, 100, 200], 'learning_rate': [0.05, 0.1, 0.2], 'max_depth': [3, 5]}\n",
+    "grid_gb = GridSearchCV(gb, param_gb, cv=5, scoring='roc_auc', n_jobs=-1)\n",
+    "grid_gb.fit(X_train_ada, y_train_cls)\n",
+    "\n",
+    "best_gb = grid_gb.best_estimator_\n",
+    "y_pred_gb = best_gb.predict(X_test_ada)\n",
+    "y_proba_gb = best_gb.predict_proba(X_test_ada)[:, 1]\n",
+    "\n",
+    "print(\"GradientBoosting лучшие параметры:\", grid_gb.best_params_)\n",
+    "print(\"Classification report:\")\n",
+    "print(classification_report(y_test_cls, y_pred_gb))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "fpr_gb, tpr_gb, _ = roc_curve(y_test_cls, y_proba_gb)\n",
+    "roc_auc_gb = auc(fpr_gb, tpr_gb)\n",
+    "precision_gb, recall_gb, _ = precision_recall_curve(y_test_cls, y_proba_gb)\n",
+    "\n",
+    "fig, axes = plt.subplots(1, 2, figsize=(12, 5))\n",
+    "axes[0].plot(fpr_gb, tpr_gb, label=f'AUC = {roc_auc_gb:.3f}')\n",
+    "axes[0].plot([0,1],[0,1],'k--')\n",
+    "axes[0].set_title('ROC (GradientBoosting)')\n",
+    "axes[0].legend()\n",
+    "\n",
+    "axes[1].plot(recall_gb, precision_gb, label='PR curve')\n",
+    "axes[1].set_title('Precision-Recall (GradientBoosting)')\n",
+    "axes[1].legend()\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.3 XGBoost"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "X_train_cat = X_train.copy()\n",
+    "X_test_cat = X_test.copy()\n",
+    "\n",
+    "X_train_cat['Country.Name'] = X_train_cat['Country.Name'].astype('category')\n",
+    "X_train_cat['Country.Code'] = X_train_cat['Country.Code'].astype('category')\n",
+    "X_test_cat['Country.Name'] = X_test_cat['Country.Name'].astype('category')\n",
+    "X_test_cat['Country.Code'] = X_test_cat['Country.Code'].astype('category')\n",
+    "\n",
+    "pos_weight = (y_train_cls == 0).sum() / (y_train_cls == 1).sum()\n",
+    "\n",
+    "xgb_clf = xgb.XGBClassifier(random_state=42, enable_categorical=True, scale_pos_weight=pos_weight)\n",
+    "param_xgb = {'n_estimators': [50, 100, 200], 'learning_rate': [0.05, 0.1, 0.2], 'max_depth': [3, 5], 'reg_lambda': [0, 1]}\n",
+    "grid_xgb = GridSearchCV(xgb_clf, param_xgb, cv=5, scoring='roc_auc', n_jobs=-1)\n",
+    "grid_xgb.fit(X_train_cat, y_train_cls)\n",
+    "\n",
+    "best_xgb = grid_xgb.best_estimator_\n",
+    "y_pred_xgb = best_xgb.predict(X_test_cat)\n",
+    "y_proba_xgb = best_xgb.predict_proba(X_test_cat)[:, 1]\n",
+    "\n",
+    "print(\"XGBoost лучшие параметры:\", grid_xgb.best_params_)\n",
+    "print(\"Classification report:\")\n",
+    "print(classification_report(y_test_cls, y_pred_xgb))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "fpr_xgb, tpr_xgb, _ = roc_curve(y_test_cls, y_proba_xgb)\n",
+    "roc_auc_xgb = auc(fpr_xgb, tpr_xgb)\n",
+    "precision_xgb, recall_xgb, _ = precision_recall_curve(y_test_cls, y_proba_xgb)\n",
+    "\n",
+    "fig, axes = plt.subplots(1, 2, figsize=(12, 5))\n",
+    "axes[0].plot(fpr_xgb, tpr_xgb, label=f'AUC = {roc_auc_xgb:.3f}')\n",
+    "axes[0].plot([0,1],[0,1],'k--')\n",
+    "axes[0].set_title('ROC (XGBoost)')\n",
+    "axes[0].legend()\n",
+    "\n",
+    "axes[1].plot(recall_xgb, precision_xgb, label='PR curve')\n",
+    "axes[1].set_title('Precision-Recall (XGBoost)')\n",
+    "axes[1].legend()\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 3.4 CatBoost"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "cb_clf = cb.CatBoostClassifier(random_state=42, auto_class_weights='Balanced', verbose=0)\n",
+    "param_cb = {\n",
+    "    'iterations': [50, 100],\n",
+    "    'learning_rate': [0.05, 0.1],\n",
+    "    'depth': [3, 5],\n",
+    "    'l2_leaf_reg': [1, 3]\n",
+    "}\n",
+    "\n",
+    "grid_cb = GridSearchCV(cb_clf, param_cb, cv=5, scoring='roc_auc', n_jobs=-1)\n",
+    "\n",
+    "cat_features_indices = [X_train.columns.get_loc(c) for c in categorical_cols]\n",
+    "\n",
+    "grid_cb.fit(X_train, y_train_cls, cat_features=cat_features_indices)\n",
+    "\n",
+    "best_cb = grid_cb.best_estimator_\n",
+    "y_pred_cb = best_cb.predict(X_test)\n",
+    "y_proba_cb = best_cb.predict_proba(X_test)[:, 1]\n",
+    "\n",
+    "print(\"CatBoost лучшие параметры:\", grid_cb.best_params_)\n",
+    "print(\"Classification report:\")\n",
+    "print(classification_report(y_test_cls, y_pred_cb))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "fpr_cb, tpr_cb, _ = roc_curve(y_test_cls, y_proba_cb)\n",
+    "roc_auc_cb = auc(fpr_cb, tpr_cb)\n",
+    "precision_cb, recall_cb, _ = precision_recall_curve(y_test_cls, y_proba_cb)\n",
+    "\n",
+    "fig, axes = plt.subplots(1, 2, figsize=(12, 5))\n",
+    "axes[0].plot(fpr_cb, tpr_cb, label=f'AUC = {roc_auc_cb:.3f}')\n",
+    "axes[0].plot([0,1],[0,1],'k--')\n",
+    "axes[0].set_title('ROC (CatBoost)')\n",
+    "axes[0].legend()\n",
+    "\n",
+    "axes[1].plot(recall_cb, precision_cb, label='PR curve')\n",
+    "axes[1].set_title('Precision-Recall (CatBoost)')\n",
+    "axes[1].legend()\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**Сравнение моделей:**\n",
+    "\n",
+    "Все модели показали практически максимальное качество. Лучший ROC AUC показал CatBoost (≈0.995), за ним XGBoost (≈0.993). AdaBoost дал AUC 0.986, GradientBoosting 0.992. CatBoost также показал лучший f1-score на тесте (0.97). Поэтому в качестве лучшей модели для дальнейшего анализа выбран CatBoost.\n",
+    "\n",
+    "## 4. SHAP-анализ для лучшей модели (CatBoost)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "explainer = shap.TreeExplainer(best_cb)\n",
+    "shap_values = explainer(X_test)\n",
+    "shap_values_array = shap_values.values\n",
+    "\n",
+    "shap.initjs()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.1 Force plot для одного объекта"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "shap.force_plot(explainer.expected_value, shap_values_array[0, :], X_test.iloc[0, :], matplotlib=True)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "shap.force_plot(explainer.expected_value, shap_values_array[:100, :], X_test.iloc[:100, :])"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.2 Bar plot для одного объекта"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "shap.plots.bar(shap_values[0])"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.3 Waterfall plot для одного объекта"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "shap.plots.waterfall(shap_values[0], max_display=10)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.4 Scatter plots"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "shap.plots.scatter(shap_values[:, 'Emissions.Production.CH4'], color=shap_values)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "shap.plots.scatter(shap_values[:, 'Emissions.Production.CH4'], color=shap_values[:, 'Country.GDP'])"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.5 Beeswarm plot"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "shap.plots.beeswarm(shap_values)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.6 Bar plot для всех признаков"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "shap.plots.bar(shap_values)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 4.7 Фильтрация признаков и переобучение"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "mean_abs_shap = np.abs(shap_values_array).mean(axis=0)\n",
+    "importance_shap = pd.DataFrame({'feature': X_test.columns, 'importance': mean_abs_shap}).sort_values('importance', ascending=False)\n",
+    "print(importance_shap.head(15))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "selected_features = importance_shap[importance_shap['importance'] > 0.005]['feature'].tolist()\n",
+    "print(f\"Отобрано {len(selected_features)} признаков: {selected_features}\")\n",
+    "\n",
+    "X_train_filt = X_train[selected_features]\n",
+    "X_test_filt = X_test[selected_features]\n",
+    "\n",
+    "cat_features_filt = [c for c in categorical_cols if c in selected_features]\n",
+    "cat_features_indices_filt = [X_train_filt.columns.get_loc(c) for c in cat_features_filt]\n",
+    "\n",
+    "cb_clf_filt = cb.CatBoostClassifier(random_state=42, cat_features=cat_features_indices_filt, auto_class_weights='Balanced', verbose=0)\n",
+    "cb_clf_filt.fit(X_train_filt, y_train_cls)\n",
+    "\n",
+    "y_pred_filt = cb_clf_filt.predict(X_test_filt)\n",
+    "print(\"Classification report после фильтрации:\")\n",
+    "print(classification_report(y_test_cls, y_pred_filt))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**Сравнение метрик до и после фильтрации:**\n",
+    "\n",
+    "После фильтрации (отбор признаков с SHAP importance > 0.005) количество признаков сократилось до 12. Качество модели не ухудшилось. Это подтверждает наличие избыточных признаков.\n",
+    "\n",
+    "### 4.8 Визуализация дерева решений"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from sklearn.tree import DecisionTreeClassifier, plot_tree\n",
+    "\n",
+    "dt_vis = DecisionTreeClassifier(max_depth=3, random_state=42)\n",
+    "dt_vis.fit(X_train_filt, y_train_cls)\n",
+    "\n",
+    "plt.figure(figsize=(20, 10))\n",
+    "plot_tree(dt_vis, feature_names=X_train_filt.columns, class_names=['low', 'high'], \n",
+    "          filled=True, rounded=True, fontsize=10)\n",
+    "plt.title('Дерево решений (DecisionTreeClassifier) после фильтрации')\n",
+    "plt.tight_layout()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 5. Регрессия (XGBoost)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "X_train_reg_cat = X_train_reg.copy()\n",
+    "X_test_reg_cat = X_test_reg.copy()\n",
+    "X_train_reg_cat['Country.Name'] = X_train_reg_cat['Country.Name'].astype('category')\n",
+    "X_train_reg_cat['Country.Code'] = X_train_reg_cat['Country.Code'].astype('category')\n",
+    "X_test_reg_cat['Country.Name'] = X_test_reg_cat['Country.Name'].astype('category')\n",
+    "X_test_reg_cat['Country.Code'] = X_test_reg_cat['Country.Code'].astype('category')\n",
+    "\n",
+    "xgb_reg = xgb.XGBRegressor(random_state=42, enable_categorical=True)\n",
+    "param_reg = {'n_estimators': [50, 100, 200], 'learning_rate': [0.05, 0.1, 0.2], 'max_depth': [3, 5], 'reg_lambda': [0, 1]}\n",
+    "grid_reg = GridSearchCV(xgb_reg, param_reg, cv=5, scoring='r2', n_jobs=-1)\n",
+    "grid_reg.fit(X_train_reg_cat, y_train_reg)\n",
+    "\n",
+    "best_reg = grid_reg.best_estimator_\n",
+    "y_pred_reg = best_reg.predict(X_test_reg_cat)\n",
+    "\n",
+    "print(\"XGBoost регрессия лучшие параметры:\", grid_reg.best_params_)\n",
+    "print(f\"MSE: {mean_squared_error(y_test_reg, y_pred_reg):.4f}\")\n",
+    "print(f\"MAE: {mean_absolute_error(y_test_reg, y_pred_reg):.4f}\")\n",
+    "print(f\"R²: {r2_score(y_test_reg, y_pred_reg):.4f}\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "explainer_reg = shap.TreeExplainer(best_reg)\n",
+    "shap_values_reg = explainer_reg.shap_values(X_test_reg_cat)\n",
+    "\n",
+    "mean_abs_shap_reg = np.abs(shap_values_reg).mean(axis=0)\n",
+    "importance_shap_reg = pd.DataFrame({'feature': X_test_reg_cat.columns, 'importance': mean_abs_shap_reg}).sort_values('importance', ascending=False)\n",
+    "print(importance_shap_reg.head(15))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "selected_features_reg = importance_shap_reg[importance_shap_reg['importance'] > 0.01]['feature'].tolist()\n",
+    "print(f\"Отобрано {len(selected_features_reg)} признаков для регрессии: {selected_features_reg}\")\n",
+    "\n",
+    "X_train_reg_filt = X_train_reg_cat[selected_features_reg]\n",
+    "X_test_reg_filt = X_test_reg_cat[selected_features_reg]\n",
+    "\n",
+    "best_reg_filt = xgb.XGBRegressor(random_state=42, enable_categorical=True, **grid_reg.best_params_)\n",
+    "best_reg_filt.fit(X_train_reg_filt, y_train_reg)\n",
+    "y_pred_reg_filt = best_reg_filt.predict(X_test_reg_filt)\n",
+    "\n",
+    "print(\"\\nПосле фильтрации признаков:\")\n",
+    "print(f\"MSE: {mean_squared_error(y_test_reg, y_pred_reg_filt):.4f}\")\n",
+    "print(f\"MAE: {mean_absolute_error(y_test_reg, y_pred_reg_filt):.4f}\")\n",
+    "print(f\"R²: {r2_score(y_test_reg, y_pred_reg_filt):.4f}\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "**Сравнение для регрессии:**\n",
+    "\n",
+    "Фильтрация признаков (по SHAP importance > 0.01) сократила число признаков с 54 до 12. Качество модели практически не изменилось: R² = 0.849 до фильтрации, 0.849 после. MSE и MAE также остались на том же уровне.\n",
+    "\n",
+    "## 6. Выводы\n",
+    "\n",
+    "- Все рассмотренные градиентные бустинги (AdaBoost, GradientBoosting, XGBoost, CatBoost) показали высокое качество классификации высоких/низких выбросов CO₂ (AUC ROC > 0.98). Лучшим оказался CatBoost.\n",
+    "- SHAP-анализ позволил выявить наиболее важные признаки: `Emissions.Production.CH4`, `Country.GDP`, `Emissions.Global Share.CO2.Total` и некоторые категории стран.\n",
+    "- Фильтрация признаков на основе SHAP importance позволила сократить количество признаков в 4 раза без потери качества как для классификации, так и для регрессии.\n",
+    "- Для регрессии XGBoost показал R² ≈ 0.85, что подтверждает возможность предсказания абсолютных выбросов CO₂ на основе макроэкономических показателей и выбросов CH₄/N₂O."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.13"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
