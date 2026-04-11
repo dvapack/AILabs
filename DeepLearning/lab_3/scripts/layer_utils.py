@@ -1,8 +1,3 @@
-# *****START OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
-
-pass
-
-# *****END OF YOUR CODE (DO NOT DELETE/MODIFY THIS LINE)*****
 from .layers import *
 from .fast_layers import *
 
