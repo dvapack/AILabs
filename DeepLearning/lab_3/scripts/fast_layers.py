@@ -4,7 +4,9 @@ import numpy as np
 try:
     from .im2col_cython import col2im_cython, im2col_cython
     from .im2col_cython import col2im_6d_cython
+    HAS_CYTHON = True
 except ImportError:
+    HAS_CYTHON = False
     print("""=========== You can safely ignore the message below if you are NOT working on ConvolutionalNetworks.ipynb ===========""")
     print("\tYou will need to compile a Cython extension for a portion of this assignment.")
     print("\tThe instructions to do this will be given in a section of the notebook below.")
@@ -43,6 +45,9 @@ def conv_forward_im2col(x, w, b, conv_param):
 
 
 def conv_forward_strides(x, w, b, conv_param):
+    if not HAS_CYTHON:
+        from .layers import conv_forward_naive
+        return conv_forward_naive(x, w, b, conv_param)
     N, C, H, W = x.shape
     F, _, HH, WW = w.shape
     stride, pad = conv_param["stride"], conv_param["pad"]
@@ -86,6 +91,9 @@ def conv_forward_strides(x, w, b, conv_param):
 
 
 def conv_backward_strides(dout, cache):
+    if not HAS_CYTHON:
+        from .layers import conv_backward_naive
+        return conv_backward_naive(dout, cache)
     x, w, b, conv_param, x_cols = cache
     stride, pad = conv_param["stride"], conv_param["pad"]
 
